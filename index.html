@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>聲控跳跳雞 | Scream Chicken</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #202020;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Press Start 2P', monospace; /* 復古像素字體 */
+            color: #ffffff;
+            overflow: hidden;
+            touch-action: none; /* 禁止手機滑動 */
+        }
+
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 800px;
+            aspect-ratio: 16/9;
+            background-color: #ffffff; /* 遊戲背景白 */
+            border: 4px solid #000000;
+            box-shadow: 10px 10px 0px #404040; /* 硬陰影 */
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            image-rendering: pixelated; /* 確保像素清晰 */
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .hud-text {
+            color: #000000;
+            font-size: 16px;
+            text-transform: uppercase;
+        }
+
+        #start-screen, #game-over-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            pointer-events: auto;
+            z-index: 10;
+        }
+
+        h1 {
+            color: #000000;
+            font-size: 32px;
+            margin-bottom: 20px;
+            text-shadow: 4px 4px 0px #cccccc;
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        button {
+            background: #000000;
+            color: #ffffff;
+            border: none;
+            padding: 15px 30px;
+            font-family: 'Press Start 2P', monospace;
+            font-size: 16px;
+            cursor: pointer;
+            box-shadow: 5px 5px 0px #888888;
+            transition: transform 0.1s;
+        }
+
+        button:active {
+            transform: translate(2px, 2px);
+            box-shadow: 3px 3px 0px #888888;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        /* 音量條 */
+        #volume-meter {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 20px;
+            height: 100px;
+            background: #eee;
+            border: 2px solid #000;
+            display: flex;
+            flex-direction: column-reverse;
+        }
+
+        #volume-bar {
+            width: 100%;
+            background-color: #000;
+            height: 0%;
+            transition: height 0.05s;
+        }
+
+        #threshold-line {
+            position: absolute;
+            bottom: 30%; /* 預設靈敏度 */
+            left: -5px;
+            width: 30px;
+            height: 2px;
+            background-color: #ff0000;
+            z-index: 2;
+        }
+        
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        input[type=range] {
+            accent-color: black;
+            cursor: pointer;
+        }
+
+        label {
+            color: black;
+            font-size: 10px;
+            margin-bottom: 5px;
+        }
+
+        #status-msg {
+            color: #d32f2f;
+            font-size: 10px;
+            text-align: center;
+            margin-bottom: 10px;
+            min-height: 1.2em;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas" width="800" height="450"></canvas>
+        
+        <!-- UI Layer -->
+        <div id="ui-layer">
+            <div class="hud-text">Score: <span id="score">0</span></div>
+            
+            <!-- Volume Visualizer -->
+            <div id="volume-meter">
+                <div id="threshold-line"></div>
+                <div id="volume-bar"></div>
+            </div>
+        </div>
+
+        <!-- Start Screen -->
+        <div id="start-screen">
+            <h1>SCREAM<br>CHICKEN</h1>
+            <div id="status-msg"></div>
+            <p style="color:#000; font-size:12px; margin-bottom:30px; text-align:center; line-height: 1.6;">
+                大聲叫 / 拍手即跳躍<br>(Scream/Clap to Jump)<br>
+                <span style="font-size: 10px; color: #666;">或按空白鍵 (Or Spacebar)</span>
+            </p>
+            <button id="start-btn">START GAME</button>
+            
+            <div class="controls">
+                <label>靈敏度 (SENSITIVITY)</label>
+                <input type="range" id="sensitivity" min="5" max="80" value="30">
+            </div>
+        </div>
+
+        <!-- Game Over Screen -->
+        <div id="game-over-screen" class="hidden">
+            <h1 style="color: #000;">GAME OVER</h1>
+            <p style="color:#000; margin-bottom: 20px;">SCORE: <span id="final-score">0</span></p>
+            <button id="restart-btn">TRY AGAIN</button>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. Audio Controller ---
+        class AudioController {
+            constructor() {
+                this.audioContext = null;
+                this.analyser = null;
+                this.dataArray = null;
+                this.source = null;
+                this.isListening = false;
+                this.volume = 0;
+            }
+
+            async init() {
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    this.analyser = this.audioContext.createAnalyser();
+                    this.source = this.audioContext.createMediaStreamSource(stream);
+                    
+                    this.analyser.fftSize = 256;
+                    this.source.connect(this.analyser);
+                    
+                    const bufferLength = this.analyser.frequencyBinCount;
+                    this.dataArray = new Uint8Array(bufferLength);
+                    this.isListening = true;
+                    this.update();
+                    document.getElementById('status-msg').innerText = "";
+                } catch (err) {
+                    console.error("Microphone access denied:", err);
+                    document.getElementById('status-msg').innerHTML = "麥克風存取被拒，請檢查權限或使用空白鍵遊玩。";
+                }
+            }
+
+            update() {
+                if (!this.isListening) return;
+                
+                requestAnimationFrame(() => this.update());
+                this.analyser.getByteFrequencyData(this.dataArray);
+                
+                // Calculate average volume
+                let sum = 0;
+                for(let i = 0; i < this.dataArray.length; i++) {
+                    sum += this.dataArray[i];
+                }
+                this.volume = sum / this.dataArray.length;
+                
+                // Update UI meter
+                const bar = document.getElementById('volume-bar');
+                if(bar) bar.style.height = Math.min(this.volume * 2.5, 100) + '%'; // Scale up a bit
+            }
+        }
+
+        // --- 2. Pixel Art Assets (Procedural) ---
+        // 0: Transparent, 1: Black, 2: Red (Comb), 3: Orange (Beak/Legs)
+        const SPRITES = {
+            chickenRun1: [
+                [0,0,0,0,0,2,2,2,0,0], // Comb
+                [0,0,0,0,1,1,1,1,1,0], // Head
+                [0,0,0,0,1,0,1,0,3,0], // Eye & Beak
+                [1,1,0,1,1,1,1,1,1,0], // Body
+                [1,1,1,1,1,1,1,1,1,1],
+                [0,1,1,1,1,1,1,1,1,1],
+                [0,0,0,1,1,1,1,1,0,0],
+                [0,0,0,0,3,0,3,0,0,0], // Legs frame 1
+                [0,0,0,0,3,0,3,0,0,0]
+            ],
+            chickenRun2: [
+                [0,0,0,0,0,2,2,2,0,0],
+                [0,0,0,0,1,1,1,1,1,0],
+                [0,0,0,0,1,0,1,0,3,0],
+                [1,1,0,1,1,1,1,1,1,0],
+                [1,1,1,1,1,1,1,1,1,1],
+                [0,1,1,1,1,1,1,1,1,1],
+                [0,0,0,1,1,1,1,1,0,0],
+                [0,0,0,0,0,0,0,3,0,0], // Legs frame 2
+                [0,0,0,0,3,3,0,0,0,0]
+            ],
+            obstacle: [
+                [0,1,1,0],
+                [1,1,1,1],
+                [1,0,0,1], // Face pattern
+                [1,1,1,1],
+                [0,1,1,0],
+                [0,1,1,0],
+                [0,1,1,0]
+            ]
+        };
+
+        // --- 3. Game Logic ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const audioController = new AudioController();
+        
+        let gameSpeed = 5;
+        let score = 0;
+        let isGameOver = false;
+        let animationFrameId;
+        let threshold = 30; // Jump threshold
+
+        // Pixel Size Scaling
+        const PIXEL_SIZE = 4;
+
+        class Entity {
+            constructor(x, y, spriteMap) {
+                this.x = x;
+                this.y = y;
+                this.sprite = spriteMap;
+                this.width = spriteMap[0].length * PIXEL_SIZE;
+                this.height = spriteMap.length * PIXEL_SIZE;
+            }
+
+            draw() {
+                for (let r = 0; r < this.sprite.length; r++) {
+                    for (let c = 0; c < this.sprite[r].length; c++) {
+                        const pixel = this.sprite[r][c];
+                        if (pixel !== 0) {
+                            if (pixel === 1) ctx.fillStyle = '#000000';
+                            else if (pixel === 2) ctx.fillStyle = '#FF0000'; // Red
+                            else if (pixel === 3) ctx.fillStyle = '#FFA500'; // Orange
+                            
+                            ctx.fillRect(this.x + c * PIXEL_SIZE, this.y + r * PIXEL_SIZE, PIXEL_SIZE, PIXEL_SIZE);
+                        }
+                    }
+                }
+            }
+        }
+
+        class Chicken extends Entity {
+            constructor() {
+                super(100, canvas.height - 100, SPRITES.chickenRun1);
+                this.dy = 0;
+                this.gravity = 0.6;
+                this.jumpPower = -12;
+                this.isGrounded = true;
+                this.frameTimer = 0;
+                this.frameToggle = false;
+                this.baseY = canvas.height - 100;
+            }
+
+            update(vol) {
+                // Animation
+                if (this.isGrounded) {
+                    this.frameTimer++;
+                    if (this.frameTimer > 8) {
+                        this.frameToggle = !this.frameToggle;
+                        this.sprite = this.frameToggle ? SPRITES.chickenRun1 : SPRITES.chickenRun2;
+                        this.frameTimer = 0;
+                    }
+                } else {
+                    this.sprite = SPRITES.chickenRun2; // Jump pose
+                }
+
+                // Physics
+                // Jump trigger: Volume > Threshold OR Spacebar (handled externally)
+                if (this.isGrounded && vol > threshold) {
+                    this.jump();
+                }
+
+                this.dy += this.gravity;
+                this.y += this.dy;
+
+                // Ground Check
+                if (this.y > this.baseY) {
+                    this.y = this.baseY;
+                    this.dy = 0;
+                    this.isGrounded = true;
+                } else {
+                    this.isGrounded = false;
+                }
+            }
+
+            jump() {
+                if (this.isGrounded) {
+                    this.dy = this.jumpPower;
+                    this.isGrounded = false;
+                }
+            }
+        }
+
+        class Obstacle extends Entity {
+            constructor(x) {
+                super(x, canvas.height - 90, SPRITES.obstacle); 
+                this.markedForDeletion = false;
+            }
+
+            update() {
+                this.x -= gameSpeed;
+                if (this.x + this.width < 0) {
+                    this.markedForDeletion = true;
+                }
+            }
+        }
+
+        // Game State
+        let chicken;
+        let obstacles = [];
+        let spawnTimer = 0;
+        let spawnInterval = 100;
+        let clouds = [];
+
+        // Simple Cloud decoration
+        function createCloud() {
+            return {
+                x: canvas.width + Math.random() * 200,
+                y: Math.random() * (canvas.height / 2),
+                speed: Math.random() * 0.5 + 0.2,
+                size: Math.random() * 20 + 30
+            };
+        }
+
+        function initGame() {
+            chicken = new Chicken();
+            obstacles = [];
+            clouds = [createCloud(), createCloud()];
+            score = 0;
+            gameSpeed = 5;
+            spawnTimer = 0;
+            isGameOver = false;
+            
+            document.getElementById('score').innerText = score;
+            document.getElementById('start-screen').classList.add('hidden');
+            document.getElementById('game-over-screen').classList.add('hidden');
+            
+            animate();
+        }
+
+        function animate() {
+            if (isGameOver) return;
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Clouds
+            ctx.fillStyle = '#eeeeee';
+            clouds.forEach(cloud => {
+                cloud.x -= cloud.speed;
+                if (cloud.x + cloud.size < 0) cloud.x = canvas.width + 50;
+                ctx.fillRect(cloud.x, cloud.y, cloud.size * 2, cloud.size);
+            });
+
+            // Ground Line
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, canvas.height - 60, canvas.width, 4);
+
+            // Update Chicken
+            chicken.update(audioController.volume);
+            chicken.draw();
+
+            // Spawn Obstacles
+            spawnTimer++;
+            if (spawnTimer > spawnInterval) {
+                obstacles.push(new Obstacle(canvas.width));
+                spawnTimer = 0;
+                // Randomize next spawn (ensure playable gap)
+                let minGap = 40 + (gameSpeed * 10);
+                spawnInterval = Math.floor(Math.random() * 60 + minGap); 
+                
+                // Increase difficulty
+                if (score > 0 && score % 50 === 0) gameSpeed += 0.5;
+            }
+
+            // Update Obstacles
+            obstacles.forEach(obs => {
+                obs.update();
+                obs.draw();
+                
+                // Collision Detection (Shrink hitbox for fairness)
+                const hitX = chicken.x + 8;
+                const hitY = chicken.y + 8;
+                const hitW = chicken.width - 16;
+                const hitH = chicken.height - 16;
+                
+                if (
+                    hitX < obs.x + obs.width &&
+                    hitX + hitW > obs.x &&
+                    hitY < obs.y + obs.height &&
+                    hitY + hitH > obs.y
+                ) {
+                    gameOver();
+                }
+            });
+
+            // Remove off-screen obstacles
+            obstacles = obstacles.filter(obs => !obs.markedForDeletion);
+
+            // Score
+            score++;
+            if (score % 10 === 0) {
+                document.getElementById('score').innerText = Math.floor(score / 10);
+            }
+
+            animationFrameId = requestAnimationFrame(animate);
+        }
+
+        function gameOver() {
+            isGameOver = true;
+            cancelAnimationFrame(animationFrameId);
+            document.getElementById('final-score').innerText = Math.floor(score / 10);
+            document.getElementById('game-over-screen').classList.remove('hidden');
+        }
+
+        // --- Event Listeners ---
+        document.getElementById('start-btn').addEventListener('click', () => {
+            audioController.init(); 
+            initGame();
+        });
+
+        document.getElementById('restart-btn').addEventListener('click', () => {
+            initGame();
+        });
+
+        // Spacebar Fallback
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault(); // Stop scrolling
+                if (isGameOver && !document.getElementById('game-over-screen').classList.contains('hidden')) {
+                     initGame();
+                } else if (!isGameOver && document.getElementById('start-screen').classList.contains('hidden') && chicken) {
+                    chicken.jump();
+                } else if (!document.getElementById('start-screen').classList.contains('hidden')) {
+                    // Start game with space if on start screen
+                    audioController.init();
+                    initGame();
+                }
+            }
+        });
+        
+        // Sensitivity Slider
+        const slider = document.getElementById('sensitivity');
+        const line = document.getElementById('threshold-line');
+        
+        slider.addEventListener('input', (e) => {
+            threshold = parseInt(e.target.value);
+            line.style.bottom = threshold + '%';
+        });
+
+        // Resize Canvas dynamically
+        function resize() {
+           // Fixed aspect ratio maintained by CSS, logical size remains 800x450
+        }
+        window.addEventListener('resize', resize);
+
+    </script>
+</body>
+</html>
